@@ -1,0 +1,123 @@
+#!/usr/bin/env ruby
+
+require 'octokit'
+require 'tracker_api'
+require 'git'
+require 'active_support'
+
+class Worder
+  extend ActiveSupport::Inflector
+end
+
+GH_ACCESS_TOKEN = ENV['GITHUB_ACCESS_TOKEN']
+PIVOTAL_TOKEN = ENV['PIVOTAL_TOKEN']
+
+def gh_client
+  @client ||= Octokit::Client.new(access_token: GH_ACCESS_TOKEN)
+end
+
+def git_wrapper
+  @git_wrapper ||= Git.open('.')
+end
+
+def pivotal_client
+  @pivotal_client ||= TrackerApi::Client.new(token: PIVOTAL_TOKEN)
+end
+
+def story_for_branch
+  return nil unless has_story_at_branch_end
+  branch = git_wrapper.current_branch
+  story_num = branch.scan(/(\d+)$/).first&.first
+  puts "looking for story #{story_num} (#{story_num.to_i})"
+  begin
+    story = pivotal_client.story(story_num.to_i)
+  rescue TrackerApi::Error => e
+    puts e.inspect
+    exit 1
+  end
+
+  story
+end
+
+def has_story_at_branch_end
+  branch = git_wrapper.current_branch
+  branch.scan(/(\d+)$/).first&.first.to_i != 0
+end
+
+def branch_to_title
+  Worder.humanize git_wrapper.current_branch.gsub(/(\d+)$/,'(#\1)')
+end
+
+def get_current_repo
+  r = git_wrapper.remotes.find{|remote| remote.name == 'origin'}
+  r.url.gsub(/git@github.com:(.*)\.git/,'\1')
+end
+
+def default_branch(repo = get_current_repo)
+  gh_client.repo(repo).default_branch
+end
+
+def make_pr(repo: get_current_repo, story: story_for_branch, base: default_branch, title: branch_to_title, body: nil, options: {})
+  body ||= ""
+  if story
+    body = <<-EOS
+[Pivotal Story](#{story.url})
+    EOS
+  end
+
+  pr = gh_client.create_pull_request(repo, base, git_wrapper.current_branch, title, body, options)
+  "https://github.com/#{repo}/pull/#{pr.number}"
+end
+
+def update_pivotal(pr_url, story = story_for_branch)
+  mark_finished_cmd = <<-CMD
+  curl -X PUT -H "X-TrackerToken: #{PIVOTAL_TOKEN}" -H "Content-Type: application/json" \
+  -d '{"current_state":"finished"}' \
+  "https://www.pivotaltracker.com/services/v5/projects/#{story.project_id}/stories/#{story.id}"
+  CMD
+
+  note_cmd = <<-CMD
+  curl -X POST -H "X-TrackerToken: #{PIVOTAL_TOKEN}" -H "Content-Type: application/json" \
+  -d '{"text":"PR out: #{pr_url}"}' \
+  "https://www.pivotaltracker.com/services/v5/projects/#{story.project_id}/stories/#{story.id}/comments"
+  CMD
+
+  unless story.story_type == 'chore'
+    puts "marking #{story.id} as finished"
+    puts `#{mark_finished_cmd}`
+  end
+
+  puts "posting link to PR"
+  puts `#{note_cmd}`
+end
+
+if %w|--help -h|.include? ARGV[0]
+  puts <<-EOF
+Usage: makepr <title> <body>
+  EOF
+  exit 0
+end
+
+opts = {}
+opts[:title] = ARGV[0] if ARGV[0]
+opts[:body] = ARGV[1] if ARGV[1]
+
+unless GH_ACCESS_TOKEN
+  puts "no GITHUB_ACCESS_TOKEN env var defined!"
+  exit 1
+end
+
+if has_story_at_branch_end
+  unless PIVOTAL_TOKEN
+    puts "no PIVOTAL_TOKEN env var defined!"
+    exit 1
+  end
+end
+
+pr_url = make_pr(opts)
+
+puts "PR created! (#{pr_url})"
+
+if has_story_at_branch_end
+  update_pivotal(pr_url)
+end
