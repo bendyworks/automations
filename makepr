@@ -27,7 +27,7 @@ end
 def story_for_branch
   return nil unless has_story_at_branch_end
   branch = git_wrapper.current_branch
-  story_num = branch.scan(/(\d+)$/).first&.first
+  story_num = (branch.scan(/(\d+)$/).first || []).first
   puts "looking for story #{story_num} (#{story_num.to_i})"
   begin
     story = pivotal_client.story(story_num.to_i)
@@ -41,7 +41,7 @@ end
 
 def has_story_at_branch_end
   branch = git_wrapper.current_branch
-  branch.scan(/(\d+)$/).first&.first.to_i != 0
+  (branch.scan(/(\d+)$/).first || []).first.to_i != 0
 end
 
 def branch_to_title
