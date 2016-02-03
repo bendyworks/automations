@@ -5,15 +5,20 @@ require 'tracker_api'
 require 'git'
 require 'active_support'
 
+require 'openssl'
+require 'optparse'
+
+DEFAULT_ENDPOINT = "api.github.com"
+DEFAULT_REMOTE = "origin"
+
 class Worder
   extend ActiveSupport::Inflector
 end
 
-GH_ACCESS_TOKEN = ENV['GITHUB_ACCESS_TOKEN']
 PIVOTAL_TOKEN = ENV['PIVOTAL_TOKEN']
 
 def gh_client
-  @client ||= Octokit::Client.new(access_token: GH_ACCESS_TOKEN)
+  @client ||= Octokit::Client.new(access_token: @opts[:access_key])
 end
 
 def git_wrapper
@@ -48,16 +53,19 @@ def branch_to_title
   Worder.humanize git_wrapper.current_branch.gsub(/(\d+)$/,'(#\1)')
 end
 
-def get_current_repo
-  r = git_wrapper.remotes.find{|remote| remote.name == 'origin'}
-  r.url.gsub(/git@github.com:(.*)\.git/,'\1')
+def get_target_repo
+  r = git_wrapper.remotes.find{|remote| remote.name == @opts[:remote]}
+  r.url.gsub(/git@.*\.com:(.*)\.git/,'\1')
 end
 
-def default_branch(repo = get_current_repo)
+def default_branch(repo = get_target_repo)
   gh_client.repo(repo).default_branch
 end
 
-def make_pr(repo: get_current_repo, story: story_for_branch, base: default_branch, title: branch_to_title, body: nil, options: {})
+def make_pr(repo: get_target_repo, story: story_for_branch, base: default_branch, title: branch_to_title,
+            body: nil, endpoint: DEFAULT_ENDPOINT, ignore_cert_errors: false, remote: DEFAULT_ENDPOINT, access_key: nil,
+            username: nil,
+            options: {})
   body ||= ""
   if story
     body = <<-EOS
@@ -65,7 +73,29 @@ def make_pr(repo: get_current_repo, story: story_for_branch, base: default_branc
     EOS
   end
 
-  pr = gh_client.create_pull_request(repo, base, git_wrapper.current_branch, title, body, options)
+  current_branch = git_wrapper.current_branch
+
+  msg = <<-MSG
+  Creating PR
+
+  to #{repo} @ #{current_branch}
+  to #{remote} @ #{default_branch}
+
+  ---
+  #{title}
+
+  #{body}
+  MSG
+
+  puts msg
+
+  if username
+    pr_head = "#{username}:#{git_wrapper.current_branch}"
+  else
+    pr_head = git_wrapper.current_branch
+  end
+
+  pr = gh_client.create_pull_request(repo, base, pr_head, title, body, options)
   "https://github.com/#{repo}/pull/#{pr.number}"
 end
 
@@ -91,21 +121,51 @@ def update_pivotal(pr_url, story = story_for_branch)
   puts `#{note_cmd}`
 end
 
-if %w|--help -h|.include? ARGV[0]
-  puts <<-EOF
-Usage: makepr <title> <body>
-  EOF
-  exit 0
+
+
+
+
+
+
+
+
+
+body = ""
+title = ""
+endpoint = "api.github.com"
+remote = "origin"
+ignore_cert_errors = false
+access_key = nil
+username = nil
+
+OptionParser.new do |o|
+  o.on('-b', '--body BODY') { |b| body = b }
+  o.on('-t', '--title TITLE') { |t| title = t }
+  o.on('-e', '--endpoint ENDPOINT') { |e| endpoint = e }
+  o.on('-r', '--remote REMOTE') { |r| remote = r }
+  o.on('-k', '--gh-key Github Acccess Key') { |k| access_key = k }
+  o.on('-u', '--user Github User Name') { |u| username = u }
+  o.on('-i') { |i| ignore_cert_errors = true }
+  o.on('-h') { puts o; exit }
+  o.parse!
 end
 
-opts = {}
-opts[:title] = ARGV[0] if ARGV[0]
-opts[:body] = ARGV[1] if ARGV[1]
+# if %w|--help -h|.include? ARGV[0]
+#   puts <<-EOF
+# Usage: makepr <title> <body>
+#   EOF
+#   exit 0
+# end
 
-unless GH_ACCESS_TOKEN
-  puts "no GITHUB_ACCESS_TOKEN env var defined!"
-  exit 1
-end
+@opts = {
+  title: title,
+  body: body,
+  endpoint: endpoint,
+  remote: remote,
+  access_key: access_key,
+  username: username,
+  ignore_cert_errors: ignore_cert_errors
+}
 
 if has_story_at_branch_end
   unless PIVOTAL_TOKEN
@@ -114,7 +174,15 @@ if has_story_at_branch_end
   end
 end
 
-pr_url = make_pr(opts)
+if ignore_cert_errors
+  OpenSSL::SSL::VERIFY_PEER = OpenSSL::SSL::VERIFY_NONE
+end
+
+Octokit.configure do |c|
+  c.api_endpoint = "https://#{endpoint}/api/v3/"
+end
+
+pr_url = make_pr(@opts)
 
 puts "PR created! (#{pr_url})"
 
