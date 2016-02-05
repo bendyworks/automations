@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+
+require 'octokit'
+require 'tracker_api'
+require 'git'
+require 'active_support'
+require 'optparse'
+require 'uri'
+
+
+file = nil
+ignore_cert_errors = true
+access_key = nil
+
+OptionParser.new do |o|
+  o.on('-f', '--file List of PR Links') { |f| file = f }
+  o.on('-k', '--gh-key Github Acccess Key') { |k| access_key = k }
+  o.on('-i') { |i| ignore_cert_errors = true }
+  o.on('-h') { puts o; exit }
+  o.parse!
+end
+
+unless access_key
+  puts "need a github access key"
+  exit(1)
+end
+
+if file
+  s = open(file).read
+  prs = s.split("\n")
+  puts "prs: #{prs}"
+  puts "count: #{prs.count}"
+
+  mergit = ->(url){
+    uri = URI(url)
+    if uri.host == "github.com"
+      endpoint = "api.github.com"
+    else
+      endpoint = "#{uri.host}/api/v3"
+    end
+    puts "pr: #{url}\nat endpoint #{endpoint}"
+  }
+
+  prs.map(&mergit)
+else
+  puts "argsstar: #{ARGV}"
+end
