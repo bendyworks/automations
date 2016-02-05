@@ -122,14 +122,6 @@ def update_pivotal(pr_url, story = story_for_branch)
 end
 
 
-
-
-
-
-
-
-
-
 body = ""
 title = ""
 endpoint = "api.github.com"
